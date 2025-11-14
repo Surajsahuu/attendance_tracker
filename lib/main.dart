@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:table_calendar/table_calendar.dart';
+import 'database_helper.dart';
 
 void main() {
   runApp(const MyApp());
@@ -28,42 +30,34 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final List<String> _subjects = [];
+  final List<Map<String, dynamic>> _subjects = [];
+  final DatabaseHelper _dbHelper = DatabaseHelper();
 
-  void _showAddSubjectDialog() async {
-    final name = await showDialog<String>(
-      context: context,
-      builder: (context) {
-        String input = '';
-        return AlertDialog(
-          title: const Text('Add Subject'),
-          content: TextField(
-            autofocus: true,
-            decoration: const InputDecoration(
-              hintText: 'Enter subject name',
-            ),
-            onChanged: (v) => input = v,
-            onSubmitted: (v) => Navigator.of(context).pop(v.trim()),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.of(context).pop(input.trim()),
-              child: const Text('Add'),
-            ),
-          ],
-        );
-      },
-    );
+  @override
+  void initState() {
+    super.initState();
+    _loadSubjects();
+  }
 
-    if (name != null && name.isNotEmpty) {
-      setState(() {
-        _subjects.add(name);
-      });
-    }
+  Future<void> _loadSubjects() async {
+    final subjects = await _dbHelper.getSubjects();
+    setState(() {
+      _subjects.addAll(subjects);
+    });
+  }
+
+  Future<void> _addSubject(String name) async {
+    final id = await _dbHelper.insertSubject(name);
+    setState(() {
+      _subjects.add({'id': id, 'name': name});
+    });
+  }
+
+  Future<void> _deleteSubject(int id) async {
+    await _dbHelper.deleteSubject(id);
+    setState(() {
+      _subjects.removeWhere((subject) => subject['id'] == id);
+    });
   }
 
   @override
@@ -86,7 +80,39 @@ class _HomePageState extends State<HomePage> {
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                 ),
                 ElevatedButton.icon(
-                  onPressed: _showAddSubjectDialog,
+                  onPressed: () async {
+                    final name = await showDialog<String>(
+                      context: context,
+                      builder: (context) {
+                        String input = '';
+                        return AlertDialog(
+                          title: const Text('Add Subject'),
+                          content: TextField(
+                            autofocus: true,
+                            decoration: const InputDecoration(
+                              hintText: 'Enter subject name',
+                            ),
+                            onChanged: (v) => input = v,
+                            onSubmitted: (v) => Navigator.of(context).pop(v.trim()),
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(context).pop(),
+                              child: const Text('Cancel'),
+                            ),
+                            ElevatedButton(
+                              onPressed: () => Navigator.of(context).pop(input.trim()),
+                              child: const Text('Add'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+
+                    if (name != null && name.isNotEmpty) {
+                      await _addSubject(name);
+                    }
+                  },
                   icon: const Icon(Icons.add),
                   label: const Text('Add Subject'),
                 )
@@ -104,23 +130,28 @@ class _HomePageState extends State<HomePage> {
                         textAlign: TextAlign.center,
                       ),
                     )
-                  : GridView.builder(
-                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 2,
-                        crossAxisSpacing: 12,
-                        mainAxisSpacing: 12,
-                        childAspectRatio: 3 / 2,
-                      ),
+                  : ListView.builder(
                       itemCount: _subjects.length,
                       itemBuilder: (context, index) {
                         final subject = _subjects[index];
-                        return _SubjectCard(
-                          name: subject,
-                          onDelete: () {
-                            setState(() {
-                              _subjects.removeAt(index);
-                            });
-                          },
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8.0),
+                          child: _SubjectCard(
+                            name: subject['name'],
+                            onDelete: () async {
+                              await _deleteSubject(subject['id']);
+                            },
+                            onTap: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (context) => SubjectCalendarPage(
+                                    subjectId: subject['id'],
+                                    subjectName: subject['name'],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
                         );
                       },
                     ),
@@ -132,11 +163,171 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
+class SubjectCalendarPage extends StatefulWidget {
+  final int subjectId;
+  final String subjectName;
+
+  const SubjectCalendarPage({
+    required this.subjectId,
+    required this.subjectName,
+    super.key,
+  });
+
+  @override
+  State<SubjectCalendarPage> createState() => _SubjectCalendarPageState();
+}
+
+class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
+  final DatabaseHelper _dbHelper = DatabaseHelper();
+  final Map<DateTime, String> _attendance = {};
+  DateTime _focusedDay = DateTime.now();
+  DateTime? _selectedDay;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAttendance();
+  }
+
+  Future<void> _loadAttendance() async {
+    final attendanceRecords = await _dbHelper.getAttendance(widget.subjectId);
+    setState(() {
+      for (var record in attendanceRecords) {
+        _attendance[DateTime.parse(record['date'])] = record['status'];
+      }
+    });
+  }
+
+  Future<void> _updateAttendance(String status) async {
+    if (_selectedDay != null) {
+      final date = _selectedDay!.toIso8601String().split('T')[0];
+      await _dbHelper.updateAttendance(widget.subjectId, date, status);
+      setState(() {
+        _attendance[_selectedDay!] = status;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.subjectName),
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            TableCalendar(
+              firstDay: DateTime.utc(2020, 1, 1),
+              lastDay: DateTime.utc(2030, 12, 31),
+              focusedDay: _focusedDay,
+              selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+              onDaySelected: (selectedDay, focusedDay) {
+                setState(() {
+                  _selectedDay = selectedDay;
+                  _focusedDay = focusedDay;
+                });
+              },
+              calendarBuilders: CalendarBuilders(
+                defaultBuilder: (context, day, focusedDay) {
+                  if (_attendance[day] == 'Present') {
+                    return Container(
+                      margin: const EdgeInsets.all(6.0),
+                      decoration: BoxDecoration(
+                        color: Colors.green,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Center(
+                        child: Text(
+                          '${day.day}',
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    );
+                  } else if (_attendance[day] == 'Absent') {
+                    return Container(
+                      margin: const EdgeInsets.all(6.0),
+                      decoration: BoxDecoration(
+                        color: Colors.red,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Center(
+                        child: Text(
+                          '${day.day}',
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    );
+                  }
+                  return null;
+                },
+              ),
+              headerStyle: const HeaderStyle(
+                formatButtonVisible: false, // Hides the 2-week toggle button
+              ),
+              availableCalendarFormats: const {
+                CalendarFormat.month: 'Month', // Only show the month view
+              },
+            ),
+            const SizedBox(height: 16),
+            if (_selectedDay != null)
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Selected Date: ${_selectedDay!.toLocal()}'.split(' ')[0],
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      ElevatedButton(
+                        onPressed: () async {
+                          await _updateAttendance('Present');
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _attendance[_selectedDay!] == 'Present'
+                              ? Colors.green
+                              : Colors.grey,
+                        ),
+                        child: const Text('Present'),
+                      ),
+                      ElevatedButton(
+                        onPressed: () async {
+                          await _updateAttendance('Absent');
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _attendance[_selectedDay!] == 'Absent'
+                              ? Colors.red
+                              : Colors.grey,
+                        ),
+                        child: const Text('Absent'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Status: ${_attendance[_selectedDay!] ?? 'Not Set'}',
+                    style: const TextStyle(fontSize: 16),
+                  ),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _SubjectCard extends StatelessWidget {
   final String name;
   final VoidCallback onDelete;
+  final VoidCallback onTap;
 
-  const _SubjectCard({required this.name, required this.onDelete});
+  const _SubjectCard({required this.name, required this.onDelete, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -145,43 +336,118 @@ class _SubjectCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(8),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
-        onTap: () {
-          // Future: navigate to subject details
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Tapped "$name"')),
-          );
-        },
+        onTap: onTap,
         child: Container(
+          width: double.infinity, // Full width
+          height: 100, // Fixed height
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(8),
             color: Colors.white,
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                name,
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
+              Expanded(
+                child: Text(
+                  name,
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-              const Spacer(),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  IconButton(
-                    onPressed: onDelete,
-                    icon: const Icon(
-                      Icons.delete_outline,
-                      size: 20,
-                    ),
-                    tooltip: 'Delete subject',
-                  )
+              PopupMenuButton<String>(
+                onSelected: (value) async {
+                  if (value == 'delete') {
+                    final confirm = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('Confirm Deletion'),
+                        content: Text('Are you sure you want to delete "$name"?'),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.of(context).pop(false),
+                            child: const Text('Cancel'),
+                          ),
+                          TextButton(
+                            onPressed: () => Navigator.of(context).pop(true),
+                            child: const Text('Delete'),
+                          ),
+                        ],
+                      ),
+                    );
+
+                    if (confirm == true) {
+                      onDelete();
+                    }
+                  }
+                },
+                itemBuilder: (BuildContext context) => [
+                  const PopupMenuItem(
+                    value: 'delete',
+                    child: Text('Delete'),
+                  ),
                 ],
-              )
+              ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class CalendarPage extends StatefulWidget {
+  const CalendarPage({super.key});
+
+  @override
+  State<CalendarPage> createState() => _CalendarPageState();
+}
+
+class _CalendarPageState extends State<CalendarPage> {
+  DateTime _focusedDay = DateTime.now();
+  DateTime? _selectedDay;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Calendar'),
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            TableCalendar(
+              firstDay: DateTime.utc(2020, 1, 1),
+              lastDay: DateTime.utc(2030, 12, 31),
+              focusedDay: _focusedDay,
+              selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+              onDaySelected: (selectedDay, focusedDay) {
+                setState(() {
+                  _selectedDay = selectedDay;
+                  _focusedDay = focusedDay;
+                });
+              },
+              calendarStyle: const CalendarStyle(
+                todayDecoration: BoxDecoration(
+                  color: Colors.deepPurple,
+                  shape: BoxShape.circle,
+                ),
+                selectedDecoration: BoxDecoration(
+                  color: Colors.deepPurpleAccent,
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            if (_selectedDay != null)
+              Text(
+                'Selected Date: ${_selectedDay!.toLocal()}'.split(' ')[0],
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+          ],
         ),
       ),
     );
