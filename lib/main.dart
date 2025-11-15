@@ -42,6 +42,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _loadSubjects() async {
     final subjects = await _dbHelper.getSubjects();
     setState(() {
+      _subjects.clear();
       _subjects.addAll(subjects);
     });
   }
@@ -52,7 +53,63 @@ class _HomePageState extends State<HomePage> {
       _subjects.add({'id': id, 'name': name});
     });
   }
-
+  Future<void> _editSubject(int id, String currentName) async {
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        String input = currentName;
+        return AlertDialog(
+          title: const Text('Edit Subject'),
+          content: TextField(
+            autofocus: true,
+            decoration: const InputDecoration(
+              hintText: 'Enter new subject name',
+            ),
+            controller: TextEditingController(text: currentName),
+            onChanged: (v) => input = v,
+            onSubmitted: (v) => Navigator.of(context).pop(v.trim()),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(input.trim()),
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+  if (newName != null && newName.isNotEmpty && newName != currentName) {
+      try {
+        await _dbHelper.updateSubject(id, newName);
+        setState(() {
+          final subjectIndex = _subjects.indexWhere((subject) => subject['id'] == id);
+          if (subjectIndex != -1) {
+            _subjects[subjectIndex]['name'] = newName;
+          }
+        });
+        
+        // Show success message
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Subject renamed to "$newName"'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } catch (e) {
+        // Show error message
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.toString()),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }  
   Future<void> _deleteSubject(int id) async {
     await _dbHelper.deleteSubject(id);
     setState(() {
@@ -138,6 +195,9 @@ class _HomePageState extends State<HomePage> {
                           padding: const EdgeInsets.symmetric(vertical: 8.0),
                           child: _SubjectCard(
                             name: subject['name'],
+                            onEdit: () async {
+                              await _editSubject(subject['id'], subject['name']);
+                            },
                             onDelete: () async {
                               await _deleteSubject(subject['id']);
                             },
@@ -182,30 +242,136 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
   final Map<DateTime, String> _attendance = {};
   DateTime _focusedDay = DateTime.now();
   DateTime? _selectedDay;
+  
+  // Add these new variables for statistics
+  int _totalClasses = 0;
+  int _presentClasses = 0;
+  int _absentClasses = 0;
+  double _attendancePercentage = 0.0;
 
   @override
   void initState() {
     super.initState();
     _loadAttendance();
+    _loadAttendanceStats(); // Load statistics when page loads
+  }
+
+  // Add this new method to load statistics
+  Future<void> _loadAttendanceStats() async {
+    final stats = await _dbHelper.getAttendanceStats(widget.subjectId);
+    setState(() {
+      _totalClasses = stats['total'] ?? 0;
+      _presentClasses = stats['present'] ?? 0;
+      _absentClasses = stats['absent'] ?? 0;
+      _attendancePercentage = (stats['percentage'] ?? 0).toDouble();
+    });
   }
 
   Future<void> _loadAttendance() async {
     final attendanceRecords = await _dbHelper.getAttendance(widget.subjectId);
     setState(() {
+      _attendance.clear();
       for (var record in attendanceRecords) {
-        _attendance[DateTime.parse(record['date'])] = record['status'];
+        final date = DateTime.parse(record['date'] as String);
+        final utcDate = DateTime.utc(date.year, date.month, date.day);
+        _attendance[utcDate] = record['status'] as String;
       }
     });
+    
+    // Also reload stats when attendance data changes
+    await _loadAttendanceStats();
   }
 
   Future<void> _updateAttendance(String status) async {
     if (_selectedDay != null) {
-      final date = _selectedDay!.toIso8601String().split('T')[0];
-      await _dbHelper.updateAttendance(widget.subjectId, date, status);
-      setState(() {
-        _attendance[_selectedDay!] = status;
-      });
+      final utcDate = DateTime.utc(_selectedDay!.year, _selectedDay!.month, _selectedDay!.day);
+      final date = utcDate.toIso8601String().split('T')[0];
+      final currentStatus = _attendance[utcDate];
+
+      if (currentStatus == status) {
+        await _dbHelper.deleteAttendance(widget.subjectId, date);
+      } else {
+        final rowsAffected = await _dbHelper.updateAttendance(widget.subjectId, date, status);
+        if (rowsAffected == 0) {
+          await _dbHelper.insertAttendance(widget.subjectId, date, status);
+        }
+      }
+      
+      await _loadAttendance(); // This will also reload stats
     }
+  }
+
+  // Add this method to build the statistics widget
+  Widget _buildAttendanceStats() {
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Attendance Summary',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildStatItem('Total', '$_totalClasses', Colors.blue),
+                _buildStatItem('Present', '$_presentClasses', Colors.green),
+                _buildStatItem('Absent', '$_absentClasses', Colors.red),
+                _buildStatItem('Percentage', '${_attendancePercentage.round()}%', 
+                    _getPercentageColor(_attendancePercentage)),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // Progress bar for visual representation
+            LinearProgressIndicator(
+              value: _attendancePercentage / 100,
+              backgroundColor: Colors.grey[300],
+              valueColor: AlwaysStoppedAnimation<Color>(
+                _getPercentageColor(_attendancePercentage),
+              ),
+              minHeight: 8,
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatItem(String label, String value, Color color) {
+    return Column(
+      children: [
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            color: Colors.grey,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Color _getPercentageColor(double percentage) {
+    if (percentage >= 75) return Colors.green;
+    if (percentage >= 50) return Colors.orange;
+    return Colors.red;
   }
 
   @override
@@ -220,7 +386,7 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
         child: Column(
           children: [
             TableCalendar(
-              firstDay: DateTime.utc(2020, 1, 1),
+              firstDay: DateTime.utc(2025, 1, 1),
               lastDay: DateTime.utc(2030, 12, 31),
               focusedDay: _focusedDay,
               selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
@@ -232,10 +398,13 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
               },
               calendarBuilders: CalendarBuilders(
                 defaultBuilder: (context, day, focusedDay) {
-                  if (_attendance[day] == 'Present') {
+                  final utcDate = DateTime.utc(day.year, day.month, day.day);
+                  final attendanceStatus = _attendance[utcDate];
+
+                  if (attendanceStatus == 'Present') {
                     return Container(
                       margin: const EdgeInsets.all(6.0),
-                      decoration: BoxDecoration(
+                      decoration: const BoxDecoration(
                         color: Colors.green,
                         shape: BoxShape.circle,
                       ),
@@ -246,10 +415,10 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
                         ),
                       ),
                     );
-                  } else if (_attendance[day] == 'Absent') {
+                  } else if (attendanceStatus == 'Absent') {
                     return Container(
                       margin: const EdgeInsets.all(6.0),
-                      decoration: BoxDecoration(
+                      decoration: const BoxDecoration(
                         color: Colors.red,
                         shape: BoxShape.circle,
                       ),
@@ -265,12 +434,17 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
                 },
               ),
               headerStyle: const HeaderStyle(
-                formatButtonVisible: false, // Hides the 2-week toggle button
+                formatButtonVisible: false,
               ),
               availableCalendarFormats: const {
-                CalendarFormat.month: 'Month', // Only show the month view
+                CalendarFormat.month: 'Month',
               },
             ),
+            const SizedBox(height: 16),
+            
+            // Add the statistics card here
+            _buildAttendanceStats(),
+            
             const SizedBox(height: 16),
             if (_selectedDay != null)
               Column(
@@ -278,7 +452,10 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
                 children: [
                   Text(
                     'Selected Date: ${_selectedDay!.toLocal()}'.split(' ')[0],
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                      fontSize: 16, 
+                      fontWeight: FontWeight.bold
+                    ),
                   ),
                   const SizedBox(height: 8),
                   Row(
@@ -289,7 +466,11 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
                           await _updateAttendance('Present');
                         },
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: _attendance[_selectedDay!] == 'Present'
+                          backgroundColor: _attendance[DateTime.utc(
+                                      _selectedDay!.year,
+                                      _selectedDay!.month,
+                                      _selectedDay!.day)] ==
+                                  'Present'
                               ? Colors.green
                               : Colors.grey,
                         ),
@@ -300,7 +481,11 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
                           await _updateAttendance('Absent');
                         },
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: _attendance[_selectedDay!] == 'Absent'
+                          backgroundColor: _attendance[DateTime.utc(
+                                      _selectedDay!.year,
+                                      _selectedDay!.month,
+                                      _selectedDay!.day)] ==
+                                  'Absent'
                               ? Colors.red
                               : Colors.grey,
                         ),
@@ -310,7 +495,7 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Status: ${_attendance[_selectedDay!] ?? 'Not Set'}',
+                    'Status: ${_attendance[DateTime.utc(_selectedDay!.year, _selectedDay!.month, _selectedDay!.day)] ?? 'Not Set'}',
                     style: const TextStyle(fontSize: 16),
                   ),
                 ],
@@ -324,10 +509,16 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
 
 class _SubjectCard extends StatelessWidget {
   final String name;
+  final VoidCallback onEdit;
   final VoidCallback onDelete;
   final VoidCallback onTap;
 
-  const _SubjectCard({required this.name, required this.onDelete, required this.onTap});
+  const _SubjectCard({
+    required this.name, 
+    required this.onEdit, 
+    required this.onDelete, 
+    required this.onTap
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -338,8 +529,8 @@ class _SubjectCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
         onTap: onTap,
         child: Container(
-          width: double.infinity, // Full width
-          height: 100, // Fixed height
+          width: double.infinity,
+          height: 100,
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(8),
@@ -358,7 +549,9 @@ class _SubjectCard extends StatelessWidget {
               ),
               PopupMenuButton<String>(
                 onSelected: (value) async {
-                  if (value == 'delete') {
+                  if (value == 'edit') {
+                    onEdit();
+                  } else if (value == 'delete') {
                     final confirm = await showDialog<bool>(
                       context: context,
                       builder: (context) => AlertDialog(
@@ -384,8 +577,24 @@ class _SubjectCard extends StatelessWidget {
                 },
                 itemBuilder: (BuildContext context) => [
                   const PopupMenuItem(
+                    value: 'edit',
+                    child: Row(
+                      children: [
+                        Icon(Icons.edit, size: 20),
+                        SizedBox(width: 8),
+                        Text('Edit'),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem(
                     value: 'delete',
-                    child: Text('Delete'),
+                    child: Row(
+                      children: [
+                        Icon(Icons.delete, size: 20),
+                        SizedBox(width: 8),
+                        Text('Delete'),
+                      ],
+                    ),
                   ),
                 ],
               ),
