@@ -14,10 +14,12 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Attendance Tracker',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color.fromARGB(116, 2, 72, 143),
+        ),
         useMaterial3: true,
       ),
-        home: const HomePage(),
+      home: const HomePage(),
     );
   }
 }
@@ -31,6 +33,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final List<Map<String, dynamic>> _subjects = [];
+  bool _isLoading = true;
   final DatabaseHelper _dbHelper = DatabaseHelper();
 
   @override
@@ -40,20 +43,41 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadSubjects() async {
+    if (mounted) setState(() => _isLoading = true);
     final subjects = await _dbHelper.getSubjects();
-    setState(() {
-      _subjects.clear();
-      _subjects.addAll(subjects);
-    });
+    List<Map<String, dynamic>> subjectsWithStats = [];
+
+    for (var subject in subjects) {
+      final stats = await _dbHelper.getAttendanceStats(subject['id']);
+      subjectsWithStats.add({
+        'id': subject['id'],
+        'name': subject['name'],
+        'percentage': stats['percentage'] ?? 0,
+        'total': stats['total'] ?? 0,
+      });
+    }
+
+    if (mounted) {
+      setState(() {
+        _subjects.clear();
+        _subjects.addAll(subjectsWithStats);
+        _isLoading = false;
+      });
+    }
   }
 
   Future<void> _addSubject(String name) async {
     final id = await _dbHelper.insertSubject(name);
-    setState(() {
-      _subjects.add({'id': id, 'name': name});
-    });
+    if (mounted) {
+      setState(() {
+        _subjects.add({'id': id, 'name': name, 'percentage': 0, 'total': 0});
+      });
+    }
   }
+
   Future<void> _editSubject(int id, String currentName) async {
+    // Before an async gap, check if the widget is still mounted.
+    if (!mounted) return;
     final newName = await showDialog<String>(
       context: context,
       builder: (context) {
@@ -82,38 +106,72 @@ class _HomePageState extends State<HomePage> {
         );
       },
     );
-  if (newName != null && newName.isNotEmpty && newName != currentName) {
+
+    if (newName != null && newName.isNotEmpty && newName != currentName) {
       try {
         await _dbHelper.updateSubject(id, newName);
-        setState(() {
-          final subjectIndex = _subjects.indexWhere((subject) => subject['id'] == id);
-          if (subjectIndex != -1) {
-            _subjects[subjectIndex]['name'] = newName;
-          }
-        });
-        
-        // Show success message
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Subject renamed to "$newName"'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        if (mounted) {
+          setState(() {
+            final subjectIndex = _subjects.indexWhere(
+              (subject) => subject['id'] == id,
+            );
+            if (subjectIndex != -1) {
+              _subjects[subjectIndex]['name'] = newName;
+            }
+          });
+
+          // Show success message
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Subject renamed to "$newName"'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
       } catch (e) {
         // Show error message
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(e.toString()),
-            backgroundColor: Colors.red,
-          ),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(e.toString()), backgroundColor: Colors.red),
+          );
+        }
       }
     }
-  }  
-  Future<void> _deleteSubject(int id) async {
-    await _dbHelper.deleteSubject(id);
+  }
+
+  void _deleteSubject(Map<String, dynamic> subject) {
+    if (!mounted) return;
+
+    final int subjectId = subject['id'];
+    final int index = _subjects.indexWhere((s) => s['id'] == subjectId);
+    if (index == -1) return; // Subject not found in the list
+
+    // Temporarily remove the subject from the UI
+    final deletedSubject = _subjects[index];
     setState(() {
-      _subjects.removeWhere((subject) => subject['id'] == id);
+      _subjects.removeAt(index);
+    });
+
+    // Show a SnackBar with an Undo action
+    ScaffoldMessenger.of(context).removeCurrentSnackBar();
+    final snackBar = SnackBar(
+      content: Text('"${deletedSubject['name']}" deleted'),
+      action: SnackBarAction(
+        label: 'Undo',
+        onPressed: () {
+          // Re-insert the subject if Undo is pressed
+          setState(() {
+            _subjects.insert(index, deletedSubject);
+          });
+        },
+      ),
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(snackBar).closed.then((reason) {
+      // If the SnackBar was not closed by the 'Undo' action, permanently delete from DB
+      if (reason != SnackBarClosedReason.action) {
+        _dbHelper.deleteSubject(subjectId);
+      }
     });
   }
 
@@ -137,9 +195,12 @@ class _HomePageState extends State<HomePage> {
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                 ),
                 ElevatedButton.icon(
-                  onPressed: () async {
-                    final name = await showDialog<String>(
-                      context: context,
+                  onPressed: () {
+                    // The .then() block is an async gap. The context should be used before it,
+                    // so we capture it here.
+                    final currentContext = context;
+                    showDialog<String>(
+                      context: currentContext,
                       builder: (context) {
                         String input = '';
                         return AlertDialog(
@@ -150,7 +211,8 @@ class _HomePageState extends State<HomePage> {
                               hintText: 'Enter subject name',
                             ),
                             onChanged: (v) => input = v,
-                            onSubmitted: (v) => Navigator.of(context).pop(v.trim()),
+                            onSubmitted: (v) =>
+                                Navigator.of(currentContext).pop(v.trim()),
                           ),
                           actions: [
                             TextButton(
@@ -158,33 +220,61 @@ class _HomePageState extends State<HomePage> {
                               child: const Text('Cancel'),
                             ),
                             ElevatedButton(
-                              onPressed: () => Navigator.of(context).pop(input.trim()),
+                              onPressed: () =>
+                                  Navigator.of(context).pop(input.trim()),
                               child: const Text('Add'),
                             ),
                           ],
                         );
                       },
-                    );
-
-                    if (name != null && name.isNotEmpty) {
-                      await _addSubject(name);
-                    }
+                    ).then((name) async {
+                      // After the async gap from showDialog, check if the widget is still mounted.
+                      if (mounted && name != null && name.isNotEmpty) {
+                        // Capture the messenger before the async gap to satisfy the lint.
+                        final messenger = ScaffoldMessenger.of(currentContext);
+                        try {
+                          await _addSubject(name);
+                        } catch (e) {
+                          if (!mounted) return;
+                          messenger.showSnackBar(
+                            SnackBar(
+                              content: Text(e.toString()),
+                              backgroundColor: Colors.red,
+                            ),
+                          );
+                        }
+                      }
+                    });
                   },
                   icon: const Icon(Icons.add),
                   label: const Text('Add Subject'),
-                )
+                ),
               ],
             ),
             const SizedBox(height: 12),
             Expanded(
-              child: _subjects.isEmpty
+              child: _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _subjects.isEmpty
                   ? Center(
-                      child: Text(
-                        'No subjects yet. Tap "Add Subject" to create one.',
-                        style: TextStyle(
-                          color: Colors.grey[600],
-                        ),
-                        textAlign: TextAlign.center,
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.school_outlined,
+                            size: 80,
+                            color: Colors.grey[400],
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'No subjects yet.\nTap "Add Subject" to create one.',
+                            style: TextStyle(
+                              color: Colors.grey[600],
+                              fontSize: 16,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
                       ),
                     )
                   : ListView.builder(
@@ -192,17 +282,14 @@ class _HomePageState extends State<HomePage> {
                       itemBuilder: (context, index) {
                         final subject = _subjects[index];
                         return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 8.0),
+                          padding: const EdgeInsets.symmetric(vertical: 4.0),
                           child: _SubjectCard(
-                            name: subject['name'],
-                            onEdit: () async {
-                              await _editSubject(subject['id'], subject['name']);
-                            },
-                            onDelete: () async {
-                              await _deleteSubject(subject['id']);
-                            },
-                            onTap: () {
-                              Navigator.of(context).push(
+                            subject: subject,
+                            onEdit: () =>
+                                _editSubject(subject['id'], subject['name']),
+                            onDelete: () => _deleteSubject(subject),
+                            onNavigate: () async {
+                              await Navigator.of(context).push(
                                 MaterialPageRoute(
                                   builder: (context) => SubjectCalendarPage(
                                     subjectId: subject['id'],
@@ -210,6 +297,10 @@ class _HomePageState extends State<HomePage> {
                                   ),
                                 ),
                               );
+                              // Reload subjects to update percentages after returning from calendar
+                              if (mounted) {
+                                _loadSubjects();
+                              }
                             },
                           ),
                         );
@@ -242,7 +333,7 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
   final Map<DateTime, String> _attendance = {};
   DateTime _focusedDay = DateTime.now();
   DateTime? _selectedDay;
-  
+
   // Add these new variables for statistics
   int _totalClasses = 0;
   int _presentClasses = 0;
@@ -259,44 +350,56 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
   // Add this new method to load statistics
   Future<void> _loadAttendanceStats() async {
     final stats = await _dbHelper.getAttendanceStats(widget.subjectId);
-    setState(() {
-      _totalClasses = stats['total'] ?? 0;
-      _presentClasses = stats['present'] ?? 0;
-      _absentClasses = stats['absent'] ?? 0;
-      _attendancePercentage = (stats['percentage'] ?? 0).toDouble();
-    });
+    if (mounted) {
+      setState(() {
+        _totalClasses = stats['total'] ?? 0;
+        _presentClasses = stats['present'] ?? 0;
+        _absentClasses = stats['absent'] ?? 0;
+        _attendancePercentage = (stats['percentage'] ?? 0).toDouble();
+      });
+    }
   }
 
   Future<void> _loadAttendance() async {
     final attendanceRecords = await _dbHelper.getAttendance(widget.subjectId);
-    setState(() {
-      _attendance.clear();
-      for (var record in attendanceRecords) {
-        final date = DateTime.parse(record['date'] as String);
-        final utcDate = DateTime.utc(date.year, date.month, date.day);
-        _attendance[utcDate] = record['status'] as String;
-      }
-    });
-    
+    if (mounted) {
+      setState(() {
+        _attendance.clear();
+        for (var record in attendanceRecords) {
+          final date = DateTime.parse(record['date'] as String);
+          final utcDate = DateTime.utc(date.year, date.month, date.day);
+          _attendance[utcDate] = record['status'] as String;
+        }
+      });
+    }
+
     // Also reload stats when attendance data changes
     await _loadAttendanceStats();
   }
 
   Future<void> _updateAttendance(String status) async {
     if (_selectedDay != null) {
-      final utcDate = DateTime.utc(_selectedDay!.year, _selectedDay!.month, _selectedDay!.day);
+      final utcDate = DateTime.utc(
+        _selectedDay!.year,
+        _selectedDay!.month,
+        _selectedDay!.day,
+      );
       final date = utcDate.toIso8601String().split('T')[0];
       final currentStatus = _attendance[utcDate];
 
       if (currentStatus == status) {
         await _dbHelper.deleteAttendance(widget.subjectId, date);
       } else {
-        final rowsAffected = await _dbHelper.updateAttendance(widget.subjectId, date, status);
+        final rowsAffected = await _dbHelper.updateAttendance(
+          widget.subjectId,
+          date,
+          status,
+        );
         if (rowsAffected == 0) {
           await _dbHelper.insertAttendance(widget.subjectId, date, status);
         }
       }
-      
+
       await _loadAttendance(); // This will also reload stats
     }
   }
@@ -312,10 +415,7 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
           children: [
             const Text(
               'Attendance Summary',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
             Row(
@@ -324,8 +424,11 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
                 _buildStatItem('Total', '$_totalClasses', Colors.blue),
                 _buildStatItem('Present', '$_presentClasses', Colors.green),
                 _buildStatItem('Absent', '$_absentClasses', Colors.red),
-                _buildStatItem('Percentage', '${_attendancePercentage.round()}%', 
-                    _getPercentageColor(_attendancePercentage)),
+                _buildStatItem(
+                  'Percentage',
+                  '${_attendancePercentage.round()}%',
+                  _getPercentageColor(_attendancePercentage),
+                ),
               ],
             ),
             const SizedBox(height: 12),
@@ -357,13 +460,7 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
           ),
         ),
         const SizedBox(height: 4),
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 12,
-            color: Colors.grey,
-          ),
-        ),
+        Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
       ],
     );
   }
@@ -433,18 +530,14 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
                   return null;
                 },
               ),
-              headerStyle: const HeaderStyle(
-                formatButtonVisible: false,
-              ),
-              availableCalendarFormats: const {
-                CalendarFormat.month: 'Month',
-              },
+              headerStyle: const HeaderStyle(formatButtonVisible: false),
+              availableCalendarFormats: const {CalendarFormat.month: 'Month'},
             ),
             const SizedBox(height: 16),
-            
+
             // Add the statistics card here
             _buildAttendanceStats(),
-            
+
             const SizedBox(height: 16),
             if (_selectedDay != null)
               Column(
@@ -453,8 +546,8 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
                   Text(
                     'Selected Date: ${_selectedDay!.toLocal()}'.split(' ')[0],
                     style: const TextStyle(
-                      fontSize: 16, 
-                      fontWeight: FontWeight.bold
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -466,10 +559,12 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
                           await _updateAttendance('Present');
                         },
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: _attendance[DateTime.utc(
-                                      _selectedDay!.year,
-                                      _selectedDay!.month,
-                                      _selectedDay!.day)] ==
+                          backgroundColor:
+                              _attendance[DateTime.utc(
+                                    _selectedDay!.year,
+                                    _selectedDay!.month,
+                                    _selectedDay!.day,
+                                  )] ==
                                   'Present'
                               ? Colors.green
                               : Colors.grey,
@@ -481,10 +576,12 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
                           await _updateAttendance('Absent');
                         },
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: _attendance[DateTime.utc(
-                                      _selectedDay!.year,
-                                      _selectedDay!.month,
-                                      _selectedDay!.day)] ==
+                          backgroundColor:
+                              _attendance[DateTime.utc(
+                                    _selectedDay!.year,
+                                    _selectedDay!.month,
+                                    _selectedDay!.day,
+                                  )] ==
                                   'Absent'
                               ? Colors.red
                               : Colors.grey,
@@ -508,18 +605,197 @@ class _SubjectCalendarPageState extends State<SubjectCalendarPage> {
 }
 
 class _SubjectCard extends StatelessWidget {
-  final String name;
+  final Map<String, dynamic> subject;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
-  final VoidCallback onTap;
+  final VoidCallback onNavigate;
 
   const _SubjectCard({
-    required this.name, 
-    required this.onEdit, 
-    required this.onDelete, 
-    required this.onTap
+    required this.subject,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onNavigate,
   });
 
+  Color _getPercentageColor(double percentage) {
+    if (percentage >= 75) return Colors.green;
+    if (percentage >= 50) return Colors.orange;
+    return Colors.red;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = subject['name'] as String;
+    final percentage = subject['percentage'] as int;
+    final totalClasses = subject['total'] as int;
+
+    return Dismissible(
+      key: ValueKey(subject['id']),
+      direction: DismissDirection.endToStart,
+      confirmDismiss: (direction) async {
+        final confirm = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Confirm Deletion'),
+            content: Text(
+              'Are you sure you want to delete "$name"? This will also delete all its attendance records and cannot be undone.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text(
+                  'Delete',
+                  style: TextStyle(color: Colors.red),
+                ),
+              ),
+            ],
+          ),
+        );
+        return confirm ?? false;
+      },
+      onDismissed: (direction) {
+        onDelete();
+      },
+      background: Container(
+        color: Colors.red,
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: const Icon(Icons.delete, color: Colors.white),
+      ),
+      child: Card(
+        elevation: 2,
+        margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        clipBehavior: Clip.antiAlias, // Ensures InkWell ripple is clipped
+        child: InkWell(
+          onTap: onNavigate,
+          child: Container(
+            height: 90,
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                // Circular percentage indicator
+                SizedBox(
+                  width: 60,
+                  height: 60,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      CircularProgressIndicator(
+                        value: percentage / 100,
+                        backgroundColor: Colors.grey[300],
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          _getPercentageColor(percentage.toDouble()),
+                        ),
+                        strokeWidth: 5,
+                      ),
+                      Center(
+                        child: Text(
+                          '$percentage%',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: _getPercentageColor(percentage.toDouble()),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        name,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Total classes: $totalClasses',
+                        style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                      ),
+                    ],
+                  ),
+                ),
+                PopupMenuButton<String>(
+                  onSelected: (value) async {
+                    if (value == 'edit') {
+                      onEdit();
+                    } else if (value == 'delete') {
+                      final confirm = await showDialog<bool>(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: const Text('Confirm Deletion'),
+                          content: Text(
+                            'Are you sure you want to delete "$name"? This will also delete all its attendance records and cannot be undone.',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(context).pop(false),
+                              child: const Text('Cancel'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.of(context).pop(true),
+                              child: const Text(
+                                'Delete',
+                                style: TextStyle(color: Colors.red),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (confirm == true) {
+                        onDelete();
+                      }
+                    }
+                  },
+                  itemBuilder: (BuildContext context) => [
+                    const PopupMenuItem(
+                      value: 'edit',
+                      child: Row(
+                        children: [
+                          Icon(Icons.edit, size: 20),
+                          SizedBox(width: 8),
+                          Text('Edit'),
+                        ],
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: 'delete',
+                      child: Row(
+                        children: [
+                          Icon(Icons.delete, size: 20, color: Colors.red),
+                          SizedBox(width: 8),
+                          Text('Delete', style: TextStyle(color: Colors.red)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/*
+  // Previous _SubjectCard implementation for reference
+  
   @override
   Widget build(BuildContext context) {
     return Material(
@@ -527,7 +803,7 @@ class _SubjectCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(8),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
-        onTap: onTap,
+        onTap: onNavigate,
         child: Container(
           width: double.infinity,
           height: 100,
@@ -537,14 +813,72 @@ class _SubjectCard extends StatelessWidget {
             color: Colors.white,
           ),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
+              // Circular percentage indicator
+              SizedBox(
+                width: 60,
+                height: 60,
+                child: Stack(
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 50,
+                        height: 50,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: _getPercentageColor(percentage.toDouble()),
+                            width: 3,
+                          ),
+                        ),
+                        child: Center(
+                          child: Text(
+                            '$percentage%',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: _getPercentageColor(percentage.toDouble()),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (totalClasses > 0)
+                      CircularProgressIndicator(
+                        value: percentage / 100,
+                        backgroundColor: Colors.grey[300],
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          _getPercentageColor(percentage.toDouble()),
+                        ),
+                        strokeWidth: 3,
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
               Expanded(
-                child: Text(
-                  name,
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      name,
+                      style: const TextStyle(
+                        fontSize: 16, 
+                        fontWeight: FontWeight.w600
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Total classes: $totalClasses',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ],
                 ),
               ),
               PopupMenuButton<String>(
@@ -552,8 +886,9 @@ class _SubjectCard extends StatelessWidget {
                   if (value == 'edit') {
                     onEdit();
                   } else if (value == 'delete') {
+                    final currentContext = context;
                     final confirm = await showDialog<bool>(
-                      context: context,
+                      context: currentContext,
                       builder: (context) => AlertDialog(
                         title: const Text('Confirm Deletion'),
                         content: Text('Are you sure you want to delete "$name"?'),
@@ -604,7 +939,7 @@ class _SubjectCard extends StatelessWidget {
       ),
     );
   }
-}
+}*/
 
 class CalendarPage extends StatefulWidget {
   const CalendarPage({super.key});
@@ -654,7 +989,10 @@ class _CalendarPageState extends State<CalendarPage> {
             if (_selectedDay != null)
               Text(
                 'Selected Date: ${_selectedDay!.toLocal()}'.split(' ')[0],
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
           ],
         ),
