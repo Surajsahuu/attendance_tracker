@@ -25,16 +25,9 @@ class DatabaseHelper {
 
     return openDatabase(
       path,
-      version: 2, // Updated version
+      version: 1,
       onCreate: (db, version) async {
         await _createTables(db);
-      },
-      onUpgrade: (db, oldVersion, newVersion) async {
-        if (oldVersion < 2) {
-          await db.execute('DROP TABLE IF EXISTS attendance');
-          await db.execute('DROP TABLE IF EXISTS subjects');
-          await _createTables(db);
-        }
       },
     );
   }
@@ -45,6 +38,7 @@ class DatabaseHelper {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         color INTEGER DEFAULT 0, 
+        order_index INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
       )
     ''');
@@ -68,19 +62,19 @@ class DatabaseHelper {
     if (trimmedName.isEmpty) {
       throw ArgumentError('Subject name cannot be empty');
     }
-    
+
     if (trimmedName.length > 50) {
       throw ArgumentError('Subject name is too long (max 50 characters)');
     }
 
     final db = await database;
-    
+
     final existing = await db.query(
-      'subjects', 
-      where: 'LOWER(name) = LOWER(?)', 
-      whereArgs: [trimmedName]
+      'subjects',
+      where: 'LOWER(name) = LOWER(?)',
+      whereArgs: [trimmedName],
     );
-    
+
     if (existing.isNotEmpty) {
       throw Exception('Subject "$trimmedName" already exists');
     }
@@ -99,11 +93,15 @@ class DatabaseHelper {
     return db.delete('subjects', where: 'id = ?', whereArgs: [id]);
   }
 
-  Future<int> insertAttendance(int subjectId, String date, String status) async {
+  Future<int> insertAttendance(
+    int subjectId,
+    String date,
+    String status,
+  ) async {
     if (status != 'Present' && status != 'Absent') {
       throw ArgumentError('Status must be "Present" or "Absent"');
     }
-    
+
     try {
       DateTime.parse(date);
     } catch (e) {
@@ -111,39 +109,49 @@ class DatabaseHelper {
     }
 
     final db = await database;
-    final result = await db.insert(
-      'attendance',
-      {
-        'subject_id': subjectId,
-        'date': date,
-        'status': status,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    final result = await db.insert('attendance', {
+      'subject_id': subjectId,
+      'date': date,
+      'status': status,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
 
-    _logger.info('Inserted attendance: {subject_id: $subjectId, date: $date, status: $status}');
+    _logger.info(
+      'Inserted attendance: {subject_id: $subjectId, date: $date, status: $status}',
+    );
     return result;
   }
 
   Future<List<Map<String, dynamic>>> getAttendance(int subjectId) async {
     final db = await database;
-    final records = await db.query('attendance', where: 'subject_id = ?', whereArgs: [subjectId]);
+    final records = await db.query(
+      'attendance',
+      where: 'subject_id = ?',
+      whereArgs: [subjectId],
+    );
 
-    _logger.info('Retrieved attendance records for subject $subjectId: $records');
+    _logger.info(
+      'Retrieved attendance records for subject $subjectId: $records',
+    );
 
     for (var record in records) {
       try {
         DateTime.parse(record['date'] as String);
       } catch (e) {
         _logger.severe('Invalid date format in database: ${record['date']}');
-        throw FormatException('Invalid date format in database: ${record['date']}');
+        throw FormatException(
+          'Invalid date format in database: ${record['date']}',
+        );
       }
     }
 
     return records;
   }
 
-  Future<int> updateAttendance(int subjectId, String date, String status) async {
+  Future<int> updateAttendance(
+    int subjectId,
+    String date,
+    String status,
+  ) async {
     final db = await database;
     final result = await db.update(
       'attendance',
@@ -152,7 +160,9 @@ class DatabaseHelper {
       whereArgs: [subjectId, date],
     );
 
-    _logger.info('Updated attendance: {subject_id: $subjectId, date: $date, status: $status}');
+    _logger.info(
+      'Updated attendance: {subject_id: $subjectId, date: $date, status: $status}',
+    );
     return result;
   }
 
@@ -167,55 +177,73 @@ class DatabaseHelper {
     _logger.info('Deleted attendance: {subject_id: $subjectId, date: $date}');
     return result;
   }
+
   Future<Map<String, dynamic>> getAttendanceStats(int subjectId) async {
-  final db = await database;
-  final records = await db.query(
-    'attendance', 
-    where: 'subject_id = ?', 
-    whereArgs: [subjectId]
-  );
-  
-  final total = records.length;
-  final present = records.where((r) => r['status'] == 'Present').length;
-  final absent = total - present;
-  final percentage = total > 0 ? (present / total * 100) : 0;
-  
-  return {
-    'total': total,
-    'present': present,
-    'absent': absent,
-    'percentage': percentage.round(),
-  };
-}
-Future<int> updateSubject(int id, String newName) async {
-  // Input validation
-  final trimmedName = newName.trim();
-  if (trimmedName.isEmpty) {
-    throw ArgumentError('Subject name cannot be empty');
-  }
-  
-  if (trimmedName.length > 50) {
-    throw ArgumentError('Subject name is too long (max 50 characters)');
+    final db = await database;
+    final records = await db.query(
+      'attendance',
+      where: 'subject_id = ?',
+      whereArgs: [subjectId],
+    );
+
+    final total = records.length;
+    final present = records.where((r) => r['status'] == 'Present').length;
+    final absent = total - present;
+    final percentage = total > 0 ? (present / total * 100) : 0;
+
+    return {
+      'total': total,
+      'present': present,
+      'absent': absent,
+      'percentage': percentage.round(),
+    };
   }
 
-  final db = await database;
-  
-  // Check for duplicate subject names (excluding the current subject)
-  final existing = await db.query(
-    'subjects', 
-    where: 'LOWER(name) = LOWER(?) AND id != ?', 
-    whereArgs: [trimmedName, id]
-  );
-  
-  if (existing.isNotEmpty) {
-    throw Exception('Subject "$trimmedName" already exists');
+  Future<int> updateSubject(int id, String newName) async {
+    // Input validation
+    final trimmedName = newName.trim();
+    if (trimmedName.isEmpty) {
+      throw ArgumentError('Subject name cannot be empty');
+    }
+
+    if (trimmedName.length > 18) {
+      throw ArgumentError('Subject name is too long (max 18 characters)');
+    }
+
+    final db = await database;
+
+    // Check for duplicate subject names (excluding the current subject)
+    final existing = await db.query(
+      'subjects',
+      where: 'LOWER(name) = LOWER(?) AND id != ?',
+      whereArgs: [trimmedName, id],
+    );
+
+    if (existing.isNotEmpty) {
+      throw Exception('Subject "$trimmedName" already exists');
+    }
+
+    return db.update(
+      'subjects',
+      {'name': trimmedName},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
-  return db.update(
-    'subjects',
-    {'name': trimmedName},
-    where: 'id = ?',
-    whereArgs: [id],
-  );
-}
+  Future<void> updateSubjectOrder(List<Map<String, dynamic>> subjects) async {
+    final db = await database;
+    final batch = db.batch();
+
+    for (int i = 0; i < subjects.length; i++) {
+      batch.update(
+        'subjects',
+        {'order_index': i},
+        where: 'id = ?',
+        whereArgs: [subjects[i]['id']],
+      );
+    }
+
+    await batch.commit(noResult: true);
+  }
 }
