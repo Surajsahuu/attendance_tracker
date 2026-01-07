@@ -1,8 +1,10 @@
 class Subject {
   final int id;
   String name;
-  int percentage;
+  double percentage;
   int total;
+  int present;
+  int absent;
   final int? orderIndex;
 
   Subject({
@@ -10,6 +12,8 @@ class Subject {
     required this.name,
     required this.percentage,
     required this.total,
+    required this.present,
+    required this.absent,
     this.orderIndex,
   });
 
@@ -17,8 +21,10 @@ class Subject {
     return Subject(
       id: map['id'],
       name: map['name'],
-      percentage: map['percentage'] ?? 0,
+      percentage: (map['percentage'] ?? 0).toDouble(),
       total: map['total'] ?? 0,
+      present: map['present'] ?? 0,
+      absent: map['absent'] ?? 0,
       orderIndex: map['order_index'],
     );
   }
@@ -29,6 +35,8 @@ class Subject {
       'name': name,
       'percentage': percentage,
       'total': total,
+      'present': present,
+      'absent': absent,
       'order_index': orderIndex,
     };
   }

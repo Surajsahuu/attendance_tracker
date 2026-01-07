@@ -138,7 +138,7 @@ class HomePage extends ConsumerWidget {
         style: const TextStyle(color: Colors.white),
       ),
       backgroundColor: Colors.grey[900],
-      duration: const Duration(seconds: 5), // Matches timer
+      duration: const Duration(seconds: 4), // Matches timer
       action: SnackBarAction(
         label: 'Undo',
         textColor: Colors.white,
@@ -162,7 +162,10 @@ class HomePage extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Attendance Tracker'),
+        title: const Text(
+          'Attendance Tracker',
+          style: TextStyle(fontWeight: FontWeight.w500),
+        ),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
       ),
       body: Padding(

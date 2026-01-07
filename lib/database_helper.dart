@@ -79,12 +79,41 @@ class DatabaseHelper {
       throw Exception('Subject "$trimmedName" already exists');
     }
 
-    return db.insert('subjects', {'name': trimmedName});
+    // Get the current maximum order_index to determine the new subject's position
+    final result = await db.rawQuery(
+      'SELECT MAX(order_index) as maxIndex FROM subjects',
+    );
+    int nextOrderIndex = 0;
+    if (result.first['maxIndex'] != null) {
+      nextOrderIndex = (result.first['maxIndex'] as int) + 1;
+    }
+
+    return db.insert('subjects', {
+      'name': trimmedName,
+      'order_index': nextOrderIndex,
+    });
   }
 
   Future<List<Map<String, dynamic>>> getSubjects() async {
     final db = await database;
     return db.query('subjects');
+  }
+
+  Future<List<Map<String, dynamic>>> getSubjectsWithStats() async {
+    final db = await database;
+    return db.rawQuery('''
+      SELECT 
+        s.id, 
+        s.name, 
+        s.color, 
+        s.order_index, 
+        s.created_at,
+        COUNT(a.id) as total,
+        SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) as present
+      FROM subjects s
+      LEFT JOIN attendance a ON s.id = a.subject_id
+      GROUP BY s.id
+    ''');
   }
 
   Future<int> deleteSubject(int id) async {
@@ -195,7 +224,7 @@ class DatabaseHelper {
       'total': total,
       'present': present,
       'absent': absent,
-      'percentage': percentage.round(),
+      'percentage': percentage,
     };
   }
 

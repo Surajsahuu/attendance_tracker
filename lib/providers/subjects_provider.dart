@@ -15,15 +15,24 @@ class SubjectsNotifier extends AsyncNotifier<List<Subject>> {
 
   Future<List<Subject>> _loadSubjects() async {
     final dbHelper = ref.read(databaseProvider);
-    final subjectsData = await dbHelper.getSubjects();
+    final subjectsData = await dbHelper.getSubjectsWithStats();
     List<Subject> subjectsList = [];
 
-    for (var subjectData in subjectsData) {
-      final stats = await dbHelper.getAttendanceStats(subjectData['id']);
+    for (var data in subjectsData) {
+      final combinedData = Map<String, dynamic>.from(data);
 
-      final combinedData = Map<String, dynamic>.from(subjectData);
-      combinedData['percentage'] = stats['percentage'] ?? 0;
-      combinedData['total'] = stats['total'] ?? 0;
+      final total = data['total'] as int? ?? 0;
+      final present = data['present'] as int? ?? 0;
+      final absent = total - present; // Calculate absent from total and present
+
+      combinedData['total'] = total;
+      combinedData['present'] = present;
+      combinedData['absent'] = absent; // Add absent to combinedData
+
+      final double calculatedPercentage = total > 0
+          ? (present / total * 100)
+          : 0;
+      combinedData['percentage'] = calculatedPercentage.round();
 
       subjectsList.add(Subject.fromMap(combinedData));
     }
@@ -42,7 +51,7 @@ class SubjectsNotifier extends AsyncNotifier<List<Subject>> {
   Future<void> addSubject(String name) async {
     final dbHelper = ref.read(databaseProvider);
 
-    // Check for duplicates locally first
+    // Check for duplicates
     if (state.hasValue) {
       final currentList = state.value!;
       if (currentList.any((s) => s.name.toLowerCase() == name.toLowerCase())) {
@@ -75,7 +84,6 @@ class SubjectsNotifier extends AsyncNotifier<List<Subject>> {
   Future<void> updateSubject(int id, String newName) async {
     final dbHelper = ref.read(databaseProvider);
 
-    // Check for duplicates locally first
     if (state.hasValue) {
       final currentList = state.value!;
       // Check if any OTHER subject has the same name

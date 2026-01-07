@@ -85,20 +85,10 @@ class _SubjectCalendarPageState extends ConsumerState<SubjectCalendarPage> {
                         _buildStatItem('Absent', '$absent', Colors.red),
                         _buildStatItem(
                           'Percentage',
-                          '${percentage.round()}%',
+                          '${percentage.toStringAsFixed(1)}%',
                           _getPercentageColor(percentage),
                         ),
                       ],
-                    ),
-                    const SizedBox(height: 12),
-                    LinearProgressIndicator(
-                      value: percentage / 100,
-                      backgroundColor: Colors.grey[300],
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        _getPercentageColor(percentage),
-                      ),
-                      minHeight: 8,
-                      borderRadius: BorderRadius.circular(4),
                     ),
                   ],
                 );
@@ -135,6 +125,35 @@ class _SubjectCalendarPageState extends ConsumerState<SubjectCalendarPage> {
     return Colors.red;
   }
 
+  Widget? _buildMarker(
+    DateTime day,
+    Map<DateTime, String> attendance, {
+    bool isSelected = false,
+  }) {
+    final utcDate = DateTime.utc(day.year, day.month, day.day);
+    final attendanceStatus = attendance[utcDate];
+
+    if (attendanceStatus == 'Present' || attendanceStatus == 'Absent') {
+      return Container(
+        margin: const EdgeInsets.all(6.0),
+        decoration: BoxDecoration(
+          color: attendanceStatus == 'Present' ? Colors.green : Colors.red,
+          shape: BoxShape.circle,
+          border: isSelected
+              ? Border.all(color: Colors.blueGrey.shade500, width: 2)
+              : null,
+        ),
+        child: Center(
+          child: Text(
+            '${day.day}',
+            style: const TextStyle(color: Colors.white),
+          ),
+        ),
+      );
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final attendanceAsync = ref.watch(attendanceProvider(widget.subjectId));
@@ -163,39 +182,13 @@ class _SubjectCalendarPageState extends ConsumerState<SubjectCalendarPage> {
                 },
                 calendarBuilders: CalendarBuilders(
                   defaultBuilder: (context, day, focusedDay) {
-                    final utcDate = DateTime.utc(day.year, day.month, day.day);
-                    final attendanceStatus = attendance[utcDate];
-
-                    if (attendanceStatus == 'Present') {
-                      return Container(
-                        margin: const EdgeInsets.all(6.0),
-                        decoration: const BoxDecoration(
-                          color: Colors.green,
-                          shape: BoxShape.circle,
-                        ),
-                        child: Center(
-                          child: Text(
-                            '${day.day}',
-                            style: const TextStyle(color: Colors.white),
-                          ),
-                        ),
-                      );
-                    } else if (attendanceStatus == 'Absent') {
-                      return Container(
-                        margin: const EdgeInsets.all(6.0),
-                        decoration: const BoxDecoration(
-                          color: Colors.red,
-                          shape: BoxShape.circle,
-                        ),
-                        child: Center(
-                          child: Text(
-                            '${day.day}',
-                            style: const TextStyle(color: Colors.white),
-                          ),
-                        ),
-                      );
-                    }
-                    return null;
+                    return _buildMarker(day, attendance);
+                  },
+                  selectedBuilder: (context, day, focusedDay) {
+                    return _buildMarker(day, attendance, isSelected: true);
+                  },
+                  todayBuilder: (context, day, focusedDay) {
+                    return _buildMarker(day, attendance);
                   },
                 ),
                 headerStyle: const HeaderStyle(formatButtonVisible: false),
@@ -231,9 +224,21 @@ class _SubjectCalendarPageState extends ConsumerState<SubjectCalendarPage> {
                                     )] ==
                                     'Present'
                                 ? Colors.green
-                                : Colors.grey,
+                                : Colors.grey[200],
+                            foregroundColor:
+                                attendance[DateTime.utc(
+                                      _selectedDay!.year,
+                                      _selectedDay!.month,
+                                      _selectedDay!.day,
+                                    )] ==
+                                    'Present'
+                                ? Colors.grey[50]
+                                : Colors.grey[800],
                           ),
-                          child: const Text('Present'),
+                          child: const Text(
+                            'Present',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
                         ),
                         ElevatedButton(
                           onPressed: () =>
@@ -247,16 +252,23 @@ class _SubjectCalendarPageState extends ConsumerState<SubjectCalendarPage> {
                                     )] ==
                                     'Absent'
                                 ? Colors.red
-                                : Colors.grey,
+                                : Colors.grey[200],
+                            foregroundColor:
+                                attendance[DateTime.utc(
+                                      _selectedDay!.year,
+                                      _selectedDay!.month,
+                                      _selectedDay!.day,
+                                    )] ==
+                                    'Absent'
+                                ? Colors.grey[50]
+                                : Colors.grey[800],
                           ),
-                          child: const Text('Absent'),
+                          child: const Text(
+                            'Absent',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
                         ),
                       ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Status: ${attendance[DateTime.utc(_selectedDay!.year, _selectedDay!.month, _selectedDay!.day)] ?? 'Not Set'}',
-                      style: const TextStyle(fontSize: 16),
                     ),
                   ],
                 ),

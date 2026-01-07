@@ -21,13 +21,41 @@ class SubjectCard extends StatelessWidget {
     return Colors.red;
   }
 
+  Future<bool> _showDeleteConfirmation(BuildContext context) async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              title: const Text('Delete Subject'),
+              content: Text(
+                'Are you sure you want to delete "${subject.name}"?',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text(
+                    'Delete',
+                    style: TextStyle(color: Colors.red),
+                  ),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Dismissible(
       key: ValueKey(subject.id),
       direction: DismissDirection.endToStart,
       confirmDismiss: (direction) async {
-        return true;
+        return await _showDeleteConfirmation(context);
       },
       onDismissed: (direction) {
         onDelete();
@@ -61,19 +89,17 @@ class SubjectCard extends StatelessWidget {
                         value: subject.percentage / 100,
                         backgroundColor: Colors.grey[300],
                         valueColor: AlwaysStoppedAnimation<Color>(
-                          _getPercentageColor(subject.percentage.toDouble()),
+                          _getPercentageColor(subject.percentage),
                         ),
                         strokeWidth: 5,
                       ),
                       Center(
                         child: Text(
-                          '${subject.percentage}%',
+                          '${subject.percentage.round()}%',
                           style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.bold,
-                            color: _getPercentageColor(
-                              subject.percentage.toDouble(),
-                            ),
+                            color: _getPercentageColor(subject.percentage),
                           ),
                         ),
                       ),
@@ -97,8 +123,12 @@ class SubjectCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Total classes: ${subject.total}',
-                        style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                        'Total classes:${subject.total} (P:${subject.present} | A:${subject.absent})',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: Colors.grey[600],
+                        ),
                       ),
                     ],
                   ),
@@ -108,7 +138,10 @@ class SubjectCard extends StatelessWidget {
                     if (value == 'edit') {
                       onEdit();
                     } else if (value == 'delete') {
-                      onDelete();
+                      final confirm = await _showDeleteConfirmation(context);
+                      if (confirm) {
+                        onDelete();
+                      }
                     }
                   },
                   itemBuilder: (BuildContext context) => [
